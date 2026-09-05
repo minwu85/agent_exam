@@ -1,0 +1,17 @@
+### Backend (Maven / Spring Boot) ###
+backend/target/
+backend/uploads/
+backend/.mvn/wrapper/maven-wrapper.jar
+
+### IDE ###
+.idea/
+*.iml
+.vscode/
+
+### Env / secrets ###
+.env
+*.env.local
+
+### OS ###
+.DS_Store
+Thumbs.db
