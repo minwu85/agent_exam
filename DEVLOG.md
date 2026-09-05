@@ -1,7 +1,7 @@
 # Development Log
 
 Running record of what was built, why it was built that way, and what went wrong along the
-way. One section per stage of the [roadmap](README.md). Newest stage at the bottom.
+way. One section per stage of the [roadmap](ROADMAP.md). Newest stage at the bottom.
 
 ## Architecture so far
 
@@ -10,7 +10,7 @@ flowchart TD
     U[Student] -->|POST /api/lectures\nmultipart PDF + title| C[LectureController]
     C --> S[LectureService]
     S -->|PagePdfDocumentReader| PDF[(Uploaded PDF\nbackend/uploads)]
-    S -->|save raw text| DB[(Postgres\nLecture table)]
+    S -->|save raw text| DB[(Postgres)]
 
     U -->|POST /api/lectures/id/analyze| C
     C --> AS[LectureAnalysisService]
@@ -22,6 +22,19 @@ flowchart TD
     U -->|GET /api/lectures/id/knowledge| C
     C --> AS
     AS -->|read + deserialize| DB
+
+    U -->|POST /api/lectures/id/quiz| QC[QuizController]
+    QC --> QS[QuizService]
+    QS -->|reads persisted knowledge| AS
+    QS --> QGA[QuizGenerationAgent]
+    QGA -->|prompt + .entity model| Claude
+    Claude -->|structured quiz draft| QGA
+    QS -->|save Quiz + Questions\ncorrect answers hidden from response| DB
+
+    U -->|POST /api/quizzes/id/submit\nanswers, no LLM call| QC
+    QC --> QMS[QuizMarkingService]
+    QMS -->|deterministic lookup vs\nstored correctChoiceIndex| DB
+    QMS -->|save QuizAttempt + AnswerRecords| DB
 ```
 
 ---
@@ -120,3 +133,80 @@ flowchart TD
   verified; end-to-end behavior (does the model actually return well-formed
   `LectureKnowledge` for a real lecture PDF) is not yet verified and should be the first
   thing checked once Postgres is available.
+
+---
+
+## Stage 3 — Quiz Agent
+
+**What was built**
+- `Quiz` / `Question` JPA entities. A `Question` stores `topic` (which key concept it
+  targets), `prompt`, a `choices` list (`@ElementCollection`, ordered), `correctChoiceIndex`,
+  and `explanation`.
+- `QuizGenerationAgent` (`agent` package): prompts Claude with the lecture's
+  `LectureKnowledge` (learning goals, key concepts, terms, common mistakes, exam topics) —
+  not the raw transcript — asking for a fixed number of multiple-choice questions, and
+  parses the result via `.call().entity(QuizDraft.class)`.
+- `QuizService`: fetches the lecture's persisted knowledge (delegates to
+  `LectureAnalysisService.getKnowledge`, so it 404s with a clear message if `/analyze`
+  hasn't run yet, instead of quietly generating a worse quiz from raw text), runs the
+  agent, maps the draft into `Quiz`/`Question` entities, persists.
+- `QuizResponse` DTO deliberately excludes `correctChoiceIndex` and `explanation` — the
+  public "take this quiz" view must not leak the answer.
+- Endpoints: `POST /api/lectures/{id}/quiz?count=5`, `GET /api/quizzes/{id}`.
+
+**Why these choices**
+- Generating from `LectureKnowledge` rather than raw transcript text mirrors the reasoning
+  in Stage 2: cheaper per call (structured summary is much shorter than a full transcript),
+  and questions come out anchored to concepts a human/agent already judged important,
+  rather than the model re-deciding what matters every time a quiz is generated.
+- Requiring `/analyze` to have already run (rather than triggering it implicitly from
+  `/quiz`) keeps each agent doing one job and keeps the two LLM calls separately
+  cacheable/re-runnable — you can regenerate a quiz from the same knowledge many times
+  without re-extracting it.
+- Answer-hiding lives in the DTO layer, not the entity — the entity always has the full
+  answer key (needed for marking in Stage 4); only the HTTP response shape decides what's
+  visible, which is the standard way to avoid "don't leak the field" bugs creeping back in
+  if the entity is ever serialized directly by mistake.
+
+**Issues faced**
+- None at compile time. `.call().entity(QuizDraft.class)` with a nested record
+  (`QuizDraft.QuestionDraft`) worked without needing a custom `ParameterizedTypeReference`
+  — Spring AI's structured-output converter handles nested records directly.
+- Same open item as Stage 1/2: not yet run against a live model/DB.
+
+---
+
+## Stage 4 — Student answers + automatic marking
+
+**What was built**
+- `QuizAttempt` / `AnswerRecord` entities: one `QuizAttempt` per submission, with one
+  `AnswerRecord` per question (`selectedChoiceIndex`, and `correct` computed at
+  construction time by comparing against `Question.correctChoiceIndex`).
+- `QuizMarkingService`: validates every submitted `questionId` actually belongs to the
+  quiz being submitted against (rejects cross-quiz answer submissions with 400), builds
+  the attempt, saves it.
+- `QuizAttemptResponse` DTO: the post-submission view, which — unlike `QuizResponse` —
+  *does* include `correctChoiceIndex` and `explanation` per question, plus an overall
+  `score`/`total`, since the student has now answered and revealing the key is the point.
+- Endpoint: `POST /api/quizzes/{id}/submit`.
+
+**Why these choices**
+- Marking is implemented as a plain deterministic comparison, not a second LLM call. The
+  correct answer was already decided at generation time (Stage 3) — re-asking a model
+  "is this correct?" would add latency, cost, and a new source of inconsistency for a
+  question that already has a known ground truth. (Free-text / short-answer grading,
+  if added later, is the case that would actually need an LLM judge — multiple-choice
+  does not.)
+- This closes the loop the project's core goal describes: lecture transcript → structured
+  key pointers (Stage 2) → quiz (Stage 3) → student attempts it → scored with explanations
+  (Stage 4). Every remaining stage in [ROADMAP.md](ROADMAP.md) builds on top of this loop
+  rather than replacing it (evaluation aggregates across attempts; exam mode adds
+  constraints around taking a quiz; memory feeds attempt history back into generation).
+
+**Issues faced**
+- None at compile time.
+- Same open item as every stage so far: verified by compilation only, not yet exercised
+  against a live Postgres + Claude API key. This is now the top priority before adding
+  further stages — the whole loop (Stages 1–4) should be smoke-tested end-to-end with one
+  real lecture PDF once Docker/Postgres is available, rather than continuing to build on
+  an unverified foundation.

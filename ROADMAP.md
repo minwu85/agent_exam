@@ -13,7 +13,7 @@ is the plan, DEVLOG is the diary.
 | Python + OCR/LLM experimentation | Stage 9 (OCR) | ⬜ Not started |
 | SQL | PostgreSQL throughout | ✅ In use |
 | JavaScript / React / Streamlit-style demos | Stage 10 (Frontend) | ⬜ Not started |
-| LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | 🔶 In progress |
+| LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | 🔶 In progress (2,3,4 done) |
 | Agent framework, tool calling | Stage 5 (Agent Tools) | ⬜ Not started |
 | Harness Engineering | Stage 5 + Stage 6 | ⬜ Not started |
 | Sandbox / simulation environment | Stage 7 (Exam Simulation) | ⬜ Not started |
@@ -54,19 +54,17 @@ Structured extraction (learning goals, key concepts, key terms, common mistakes,
 topics) via `ChatClient.entity()`. This *is* the "summarize lecture transcript into key
 pointers" step from your original goal. Details: [DEVLOG.md](DEVLOG.md#stage-2--lecture-understanding-knowledge-extraction-agent).
 
-### ⬜ Stage 3 — Quiz Agent (generate practice questions)
-A `QuizGenerationAgent` reads a lecture's `LectureKnowledge` (not raw text — cheaper,
-more targeted) and generates multiple-choice questions with the correct answer and an
-explanation tied back to a specific key concept. New entities: `Quiz`, `Question`,
-`Choice`. Endpoint: `POST /api/lectures/{id}/quiz`. This is the "provide quiz for user to
-do" half of your stated goal.
+### ✅ Stage 3 — Quiz Agent (generate practice questions)
+`QuizGenerationAgent` reads a lecture's `LectureKnowledge` (not raw text — cheaper, more
+targeted) and generates multiple-choice questions with a correct answer and explanation
+tied back to a specific key concept. `POST /api/lectures/{id}/quiz`, `GET /api/quizzes/{id}`.
+This is the "provide quiz for user to do" half of your stated goal. Details: [DEVLOG.md](DEVLOG.md#stage-3--quiz-agent).
 
-### ⬜ Stage 4 — Student answers + automatic marking
-Student submits answers to a generated quiz; a `QuizMarkingService` scores them
-deterministically (the correct choice is already known — no LLM call needed to mark
-multiple-choice) and returns per-question correctness + the agent's explanation.
-New entity: `QuizAttempt`. This closes the loop: transcript → key pointers → quiz →
-self-test → score.
+### ✅ Stage 4 — Student answers + automatic marking
+Student submits answers (`POST /api/quizzes/{id}/submit`); `QuizMarkingService` scores
+them deterministically (the correct choice is already known from Stage 3 — no LLM call
+needed to mark multiple-choice) and returns per-question correctness + explanation.
+This closes the loop: transcript → key pointers → quiz → self-test → score. Details: [DEVLOG.md](DEVLOG.md#stage-4--student-answers--automatic-marking).
 
 ### ⬜ Stage 5 — Agent framework & tools (Harness Engineering)
 Formalize what's currently three separate agent classes into one `LearningAgent` that
