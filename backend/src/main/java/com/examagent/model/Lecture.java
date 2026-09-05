@@ -31,6 +31,10 @@ public class Lecture {
     @Lob
     private String rawText;
 
+    /** Structured output of {@code KnowledgeExtractionAgent}, serialized as JSON. Null until analyzed. */
+    @Lob
+    private String knowledgeJson;
+
     @Column(nullable = false)
     private Instant uploadedAt = Instant.now();
 

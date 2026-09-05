@@ -4,7 +4,8 @@ import com.examagent.model.Lecture;
 
 import java.time.Instant;
 
-public record LectureResponse(Long id, String title, String originalFilename, Instant uploadedAt, int textLength) {
+public record LectureResponse(Long id, String title, String originalFilename, Instant uploadedAt,
+                               int textLength, boolean analyzed) {
 
     public static LectureResponse from(Lecture lecture) {
         int length = lecture.getRawText() == null ? 0 : lecture.getRawText().length();
@@ -13,7 +14,8 @@ public record LectureResponse(Long id, String title, String originalFilename, In
                 lecture.getTitle(),
                 lecture.getOriginalFilename(),
                 lecture.getUploadedAt(),
-                length
+                length,
+                lecture.getKnowledgeJson() != null
         );
     }
 }

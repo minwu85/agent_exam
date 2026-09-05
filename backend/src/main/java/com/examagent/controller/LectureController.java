@@ -1,8 +1,10 @@
 package com.examagent.controller;
 
+import com.examagent.dto.LectureKnowledge;
 import com.examagent.dto.LectureResponse;
 import com.examagent.model.Lecture;
 import com.examagent.repository.LectureRepository;
+import com.examagent.service.LectureAnalysisService;
 import com.examagent.service.LectureService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,10 +21,14 @@ public class LectureController {
 
     private final LectureService lectureService;
     private final LectureRepository lectureRepository;
+    private final LectureAnalysisService lectureAnalysisService;
 
-    public LectureController(LectureService lectureService, LectureRepository lectureRepository) {
+    public LectureController(LectureService lectureService,
+                              LectureRepository lectureRepository,
+                              LectureAnalysisService lectureAnalysisService) {
         this.lectureService = lectureService;
         this.lectureRepository = lectureRepository;
+        this.lectureAnalysisService = lectureAnalysisService;
     }
 
     @PostMapping(consumes = "multipart/form-data")
@@ -46,5 +52,17 @@ public class LectureController {
         return lectureRepository.findById(id)
                 .map(LectureResponse::from)
                 .orElseThrow(() -> new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND));
+    }
+
+    /** Runs the KnowledgeExtractionAgent over this lecture and persists the structured result. */
+    @PostMapping("/{id}/analyze")
+    public LectureKnowledge analyze(@PathVariable Long id) {
+        return lectureAnalysisService.analyze(id);
+    }
+
+    /** Returns the previously extracted structured knowledge, without re-calling the model. */
+    @GetMapping("/{id}/knowledge")
+    public LectureKnowledge knowledge(@PathVariable Long id) {
+        return lectureAnalysisService.getKnowledge(id);
     }
 }
