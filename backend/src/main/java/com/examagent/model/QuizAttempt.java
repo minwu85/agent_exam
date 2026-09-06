@@ -23,6 +23,11 @@ public class QuizAttempt {
     @JoinColumn(name = "quiz_id", nullable = false)
     private Quiz quiz;
 
+    /** Nullable - an attempt can be anonymous. Set when the submission names a student, enabling per-student history (Stage 8). */
+    @ManyToOne
+    @JoinColumn(name = "student_id")
+    private Student student;
+
     @OneToMany(mappedBy = "attempt", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<AnswerRecord> answers = new ArrayList<>();
 

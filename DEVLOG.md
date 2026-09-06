@@ -59,6 +59,23 @@ flowchart TD
     EC --> EXS
     EXS -->|reuses| QMS
     EXS -->|deterministic score threshold,\nno LLM| EC
+
+    U -->|POST /api/students\ndisplayName, no auth| SC[StudentController]
+    SC --> SS[StudentService]
+    SS -->|save| DB
+
+    U -->|POST /api/quizzes/id/submit\noptional studentId| QC
+    QC --> QMS
+
+    U -->|GET /api/students/id/lectures/id/evaluation| SC
+    SC --> ESvc[EvaluationService]
+    ESvc -->|attempts filtered by student| DB
+    ESvc --> EA
+
+    U -->|POST /api/agent/chat| AC
+    AC --> LA
+    LA -.->|tool call| ST[StudentTools]
+    ST --> ESvc
 ```
 
 ---
@@ -341,6 +358,14 @@ flowchart TD
   Checking or changing this needs an elevated shell, which this session doesn't have
   (`Get-WindowsOptionalFeature` itself failed with "requires elevation") - genuinely
   outside what's fixable from here, left for the user to run.
+- **Resolved**: the user ran `wsl.exe --install --no-distribution` from an elevated
+  PowerShell and rebooted. `docker ps`/`docker info` now succeed. Three separate things
+  had to be true before Docker Desktop's WSL2 backend would actually work on this machine,
+  and each was fixed by a different action: hardware VT-x enabled in BIOS/UEFI (manual
+  firmware change) → the "Virtual Machine Platform" Windows optional component enabled
+  (`wsl.exe --install --no-distribution`, elevated) → a reboot to apply both. The full
+  smoke test in the next stage entry is the first time anything in this project has run
+  against a real Postgres instance rather than compiling in isolation.
 
 ---
 
@@ -389,3 +414,111 @@ flowchart TD
 - Same open item as every stage: compile-verified only. Additionally still blocked on the
   Windows optional component issue above — Docker/Postgres still not reachable from this
   machine as of this stage, so Stages 1–7 remain entirely unexercised end-to-end.
+
+---
+
+## Live smoke test — Stages 1–7 against real Postgres
+
+With Docker finally working (see the resolved note above), this is the first time
+anything in this project ran instead of just compiling. Two real bugs surfaced in the
+first thirty seconds of ever actually booting the app — exactly the kind of thing that
+compile-checking alone cannot catch, and the reason every stage above kept flagging
+"not yet run" as the top risk.
+
+**Bug 1 — no `ObjectMapper` bean.** `LectureAnalysisService` (Stage 2) failed to start:
+`Parameter 2 of constructor ... required a bean of type
+'com.fasterxml.jackson.databind.ObjectMapper' that could not be found`. Cause: Spring Boot
+4 has moved its own auto-configured `ObjectMapper` to Jackson 3 (new `tools.jackson.*`
+groupId/package) — `com.fasterxml.jackson.databind.ObjectMapper` (Jackson 2, what the
+code was written against) is still on the classpath, but only as a transitive dependency
+of Spring AI's JSON-schema tooling, with no bean of that type auto-configured anymore.
+Fixed by adding `com.examagent.config.JacksonConfig`, an explicit `@Bean ObjectMapper`
+of the classic Jackson 2 type, used only by `LectureAnalysisService` for the
+`knowledgeJson` column — unrelated to (and doesn't change) how HTTP responses get
+serialized, which still goes through Boot's own Jackson 3 auto-configuration.
+
+**Bug 2 — pgvector's `VectorStore` auto-config needs an `EmbeddingModel`.**
+`PgVectorStoreAutoConfiguration` failed: no `EmbeddingModel` bean available. Cause:
+`spring-ai-starter-vector-store-pgvector` was added in Stage 1 in anticipation of Stage 9
+(RAG), but Anthropic has no Spring AI embeddings starter, so nothing provides an
+`EmbeddingModel` — a dependency that looked harmless at compile time turned out to hard-fail
+app *startup*. Fixed for now with `spring.autoconfigure.exclude=...PgVectorStoreAutoConfiguration`
+in `application.properties`, with a comment marking it for removal once Stage 9 adds a
+real embedding model (e.g. Ollama running locally). Lesson for both bugs: a dependency
+that compiles clean can still break at runtime through auto-configuration - added early
+"for later" is exactly the kind of dependency that needs an actual boot, not just a
+compile, before being trusted.
+
+**What was actually verified**, after both fixes, app started in ~14s:
+- Real Postgres connection (Hikari pool, Postgres 16.15, via the `compose.yaml` container
+  from Stage 1) — first real proof that container works at all.
+- Hibernate created all 7 expected tables from a clean database with no manual schema
+  work: `lecture`, `quiz`, `question`, `question_choices`, `quiz_attempt`,
+  `answer_record`, `exam_session` (`\dt` via `docker exec ... psql`) — confirms the JPA
+  mappings across Stages 1, 3, 4 and 7 are structurally correct.
+- `POST /api/lectures` end-to-end with a real (small, hand-built) PDF: file saved,
+  `PagePdfDocumentReader` extracted 3293 characters of real text, row persisted, returned
+  `analyzed: false` as expected. `GET /api/lectures` and `GET /api/lectures/{id}` both
+  correct.
+
+**Not yet verified**: everything that calls Claude — Stage 2 (`/analyze`), Stage 3
+(`/quiz`), Stage 5 (`/agent/chat`), Stage 6 (`/evaluation`), and submitting a Stage 7 exam
+all require `ANTHROPIC_API_KEY`, which is not set in this environment. Offered to wait for
+the user to set it; they chose to keep building instead, so this remains open - every
+LLM-calling endpoint below is still compile-verified only, same caveat as Stages 1-7 had
+before the live Postgres test.
+
+---
+
+## Stage 8 — Personalized memory
+
+**What was built**
+- `Student` entity: deliberately minimal (`displayName`, `createdAt`, no password/auth) -
+  an identity to hang history off of, not a real accounts system. `QuizAttempt` gets a
+  nullable `student` reference, set only when a submission names one
+  (`QuizSubmissionRequest.studentId`, optional) — an attempt with no student is still a
+  valid, ungraded-by-name-but-fully-graded attempt, so nothing before this stage breaks.
+- `EvaluationService` refactored: the Stage 6 aggregation/agent-call logic is now shared
+  by two entry points — `evaluateLecture` (everyone's attempts, unchanged) and the new
+  `evaluateStudentOnLecture(lectureId, studentId)`, which filters attempts to one student
+  via a new repository query (`findByQuizIdInAndStudentId`) before the same
+  tally/agent-call path runs.
+- `StudentTools` (new, alongside `LectureTools`): a `getStudentHistory(studentId,
+  lectureId)` tool wrapping `evaluateStudentOnLecture` - this is exactly the tool
+  `LectureTools` was missing at Stage 5 (noted in that stage's own log entry as "no
+  student/history concept exists yet"). `LearningAgent` now takes both tool components and
+  its system prompt was extended to mention personal-progress questions.
+- Endpoints: `POST /api/students`, `GET /api/students/{id}`,
+  `GET /api/students/{id}/lectures/{lectureId}/evaluation`; `POST /api/quizzes/{id}/submit`
+  now accepts an optional `studentId` in its body.
+
+**Why these choices**
+- No authentication was added. Building real login/sessions is its own scope entirely and
+  not what "personalized memory" in the target role is actually testing for - the point is
+  the *memory* mechanism (scoping history to an identity, feeding it back through a tool),
+  which is fully demonstrated without auth. `Student` is shaped so a real auth system could
+  attach to it later (map an authenticated user to a `Student` row) without touching
+  `QuizAttempt`, `EvaluationService`, or the tool at all.
+- Reused Stage 6's aggregation/agent code path rather than writing a second one for the
+  personalized case - the only thing that should differ between "how is the class doing"
+  and "how is this one student doing" is which attempts get counted, not how they get
+  interpreted. Two thin methods sharing one private `evaluate(...)` core, not two parallel
+  implementations.
+- `studentId` is optional on submission rather than required, and attempts stay valid
+  without one. Forcing every quiz/exam submission to name a student would have meant
+  either inventing a fake default student or breaking every endpoint built in Stages 3/4/7
+  — an opt-in field was the non-breaking path, consistent with how Stage 6's per-lecture
+  (not per-student) evaluation was explicitly designed in its own log entry to be "a
+  straightforward migration... once accounts exist" rather than a rewrite.
+
+**Issues faced**
+- None at compile time.
+- Verified live, no LLM required for most of it: `POST /api/students` → `GET
+  /api/students/{id}` round-tripped correctly; `GET /api/students/999` correctly 404s;
+  `GET /api/students/1/lectures/1/evaluation` correctly 404s with "no quizzes generated
+  yet" (lecture 1 has no quiz - blocked on the same missing `ANTHROPIC_API_KEY`).
+  Hibernate's `ddl-auto=update` cleanly added the new `student` table and a nullable
+  `student_id` FK column onto the existing `quiz_attempt` table with no manual migration
+  needed (confirmed via `\d quiz_attempt` in the running container). Not yet verified:
+  `StudentTools.getStudentHistory` actually being called correctly by `LearningAgent` -
+  needs a live model, same open item as everything else that calls Claude.

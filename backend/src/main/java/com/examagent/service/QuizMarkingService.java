@@ -5,8 +5,10 @@ import com.examagent.model.AnswerRecord;
 import com.examagent.model.Question;
 import com.examagent.model.Quiz;
 import com.examagent.model.QuizAttempt;
+import com.examagent.model.Student;
 import com.examagent.repository.QuizAttemptRepository;
 import com.examagent.repository.QuizRepository;
+import com.examagent.repository.StudentRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -25,10 +27,13 @@ public class QuizMarkingService {
 
     private final QuizRepository quizRepository;
     private final QuizAttemptRepository quizAttemptRepository;
+    private final StudentRepository studentRepository;
 
-    public QuizMarkingService(QuizRepository quizRepository, QuizAttemptRepository quizAttemptRepository) {
+    public QuizMarkingService(QuizRepository quizRepository, QuizAttemptRepository quizAttemptRepository,
+                               StudentRepository studentRepository) {
         this.quizRepository = quizRepository;
         this.quizAttemptRepository = quizAttemptRepository;
+        this.studentRepository = studentRepository;
     }
 
     public QuizAttempt submit(Long quizId, QuizSubmissionRequest request) {
@@ -39,6 +44,11 @@ public class QuizMarkingService {
                 .collect(Collectors.toMap(Question::getId, Function.identity()));
 
         QuizAttempt attempt = new QuizAttempt(quiz);
+        if (request.studentId() != null) {
+            Student student = studentRepository.findById(request.studentId())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student not found: " + request.studentId()));
+            attempt.setStudent(student);
+        }
         for (QuizSubmissionRequest.AnswerSubmission answer : request.answers()) {
             Question question = byId.get(answer.questionId());
             if (question == null) {

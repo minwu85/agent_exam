@@ -21,12 +21,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Aggregates every recorded QuizAttempt for a lecture into per-topic accuracy, then asks
- * EvaluationAgent to interpret it. Scoped per-lecture rather than per-student for now: there
- * is no student/login concept yet (that's Stage 8 - Personalized memory), so this evaluates
- * "how is practice on this lecture going" across all attempts recorded against it, which is
- * the right granularity for a single-user setup and a straightforward migration to
- * per-student scoping once accounts exist.
+ * Aggregates recorded QuizAttempts into per-topic accuracy, then asks EvaluationAgent to
+ * interpret it. Two granularities: evaluateLecture (everyone's attempts - "how is practice
+ * on this lecture going overall") and evaluateStudentOnLecture (Stage 8 - one student's
+ * attempts only, the personalized version). Same aggregation and same agent either way;
+ * only which attempts get counted differs.
  */
 @Service
 public class EvaluationService {
@@ -50,21 +49,39 @@ public class EvaluationService {
     }
 
     public EvaluationResult evaluateLecture(Long lectureId) {
-        Lecture lecture = lectureRepository.findById(lectureId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Lecture not found: " + lectureId));
+        List<Long> quizIds = quizIdsFor(lectureId);
+        List<QuizAttempt> attempts = quizAttemptRepository.findByQuizIdIn(quizIds);
+        return evaluate(lectureId, attempts,
+                "No quiz attempts have been recorded for lecture %d yet".formatted(lectureId));
+    }
 
+    /** Stage 8: same evaluation, scoped to one student's attempts only. */
+    public EvaluationResult evaluateStudentOnLecture(Long lectureId, Long studentId) {
+        List<Long> quizIds = quizIdsFor(lectureId);
+        List<QuizAttempt> attempts = quizAttemptRepository.findByQuizIdInAndStudentId(quizIds, studentId);
+        return evaluate(lectureId, attempts,
+                "Student %d has no recorded quiz attempts for lecture %d yet".formatted(studentId, lectureId));
+    }
+
+    private List<Long> quizIdsFor(Long lectureId) {
+        if (!lectureRepository.existsById(lectureId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Lecture not found: " + lectureId);
+        }
         List<Long> quizIds = quizRepository.findByLectureId(lectureId).stream().map(Quiz::getId).toList();
         if (quizIds.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND,
                     "No quizzes have been generated for lecture %d yet".formatted(lectureId));
         }
+        return quizIds;
+    }
 
-        List<QuizAttempt> attempts = quizAttemptRepository.findByQuizIdIn(quizIds);
+    private EvaluationResult evaluate(Long lectureId, List<QuizAttempt> attempts, String emptyMessage) {
         if (attempts.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
-                    "No quiz attempts have been recorded for lecture %d yet".formatted(lectureId));
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, emptyMessage);
         }
 
+        Lecture lecture = lectureRepository.findById(lectureId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Lecture not found: " + lectureId));
         List<TopicStats> topicStats = computeTopicStats(attempts);
         LectureKnowledge knowledge = lectureAnalysisService.getKnowledge(lectureId);
 

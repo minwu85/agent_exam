@@ -13,11 +13,11 @@ is the plan, DEVLOG is the diary.
 | Python + OCR/LLM experimentation | Stage 9 (OCR) | ⬜ Not started |
 | SQL | PostgreSQL throughout | ✅ In use |
 | JavaScript / React / Streamlit-style demos | Stage 10 (Frontend) | ⬜ Not started |
-| LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | 🔶 In progress (2,3,4 done) |
+| LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | ✅ Done (2,3,4,5,6,7,8 all built) |
 | Agent framework, tool calling | Stage 5 (Agent Tools) | ✅ Done |
 | Harness Engineering | Stage 5 + Stage 6 | ✅ Done |
 | Sandbox / simulation environment | Stage 7 (Exam Simulation) | ✅ Done |
-| Personalized memory | Stage 8 (Student Memory & Personalization) | ⬜ Not started |
+| Personalized memory | Stage 8 (Student Memory & Personalization) | ✅ Done |
 | Skills (as in: reusable agent capabilities) | Stage 5 | ⬜ Not started |
 | Automatic evaluation system | Stage 6 (Evaluation Agent) | ✅ Done |
 | GPU compute resource management/scheduling | Stage 11 (stretch — see note) | ⬜ Not started |
@@ -92,12 +92,15 @@ concept applied to an exam rather than a code sandbox — same idea (a bounded, 
 environment a session runs inside of), applied to the domain this project is actually
 about. Details: [DEVLOG.md](DEVLOG.md#stage-7--exam-simulation-sandbox--simulation-environment).
 
-### ⬜ Stage 8 — Personalized memory
-Persist student history (attempts, per-topic accuracy over time) and feed a summary of
-it into the Quiz/Evaluation agents' prompts so question difficulty and topic selection
-adapt over time, instead of every session starting cold. Current practice favors
-*selective* memory — store distilled facts (per-topic mastery), not full transcripts —
-retrieved semantically rather than dumped wholesale into the prompt ([MachineLearningMastery: architectural patterns for persistent memory in AI agents](https://machinelearningmastery.com/5-architectural-patterns-for-persistent-memory-and-state-in-ai-agents/)).
+### ✅ Stage 8 — Personalized memory
+A minimal `Student` identity (no auth) that `QuizAttempt`s can optionally be scoped to;
+`EvaluationService` and a new `getStudentHistory` agent tool retrieve one student's own
+per-topic performance rather than the class-wide aggregate from Stage 6.
+`POST /api/students`, `GET /api/students/{id}/lectures/{id}/evaluation`. Matches the
+"selective memory" pattern from current practice — distilled per-topic facts, retrieved
+on demand by a tool, not a full history dumped into every prompt ([MachineLearningMastery: architectural patterns for persistent memory in AI agents](https://machinelearningmastery.com/5-architectural-patterns-for-persistent-memory-and-state-in-ai-agents/)). Feeding this
+history back into *quiz generation* itself (so question selection adapts) is not yet
+done — currently only readable via evaluation/the chat agent. Details: [DEVLOG.md](DEVLOG.md#stage-8--personalized-memory).
 
 ### ⬜ Stage 9 — RAG / Knowledge base (pgvector)
 Chunk + embed lecture transcripts into pgvector; let the Quiz/Evaluation agents retrieve

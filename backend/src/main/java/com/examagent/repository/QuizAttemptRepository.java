@@ -8,4 +8,6 @@ import java.util.List;
 public interface QuizAttemptRepository extends JpaRepository<QuizAttempt, Long> {
 
     List<QuizAttempt> findByQuizIdIn(List<Long> quizIds);
+
+    List<QuizAttempt> findByQuizIdInAndStudentId(List<Long> quizIds, Long studentId);
 }
