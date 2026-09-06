@@ -35,6 +35,13 @@ flowchart TD
     QC --> QMS[QuizMarkingService]
     QMS -->|deterministic lookup vs\nstored correctChoiceIndex| DB
     QMS -->|save QuizAttempt + AnswerRecords| DB
+
+    U -->|POST /api/agent/chat\nfree-form message| AC[AgentController]
+    AC --> LA[LearningAgent]
+    LA -->|model decides: call a tool or just reply| Claude
+    LA -.->|tool call| LT[LectureTools]
+    LT --> AS
+    LT --> QS
 ```
 
 ---
@@ -210,3 +217,52 @@ flowchart TD
   further stages — the whole loop (Stages 1–4) should be smoke-tested end-to-end with one
   real lecture PDF once Docker/Postgres is available, rather than continuing to build on
   an unverified foundation.
+
+---
+
+## Stage 5 — Agent framework & tools (Harness Engineering)
+
+**What was built**
+- `LectureTools` (new `tools` package): the two capabilities the agent may use, as plain
+  `@Component` methods annotated `@Tool`/`@ToolParam` — `getLectureKnowledge(lectureId)`
+  and `generateQuiz(lectureId, questionCount)`. Each just delegates to the existing
+  `LectureAnalysisService`/`QuizService` from Stages 2–3; no new business logic here, only
+  the tool boundary around logic that already existed.
+- `LearningAgent`: builds a `ChatClient` with a system prompt plus `.defaultTools(lectureTools)`,
+  exposing one method, `converse(String studentMessage)`. Given a free-form message, the
+  model itself decides whether to call a tool (and with what arguments) before replying,
+  instead of a service hardcoding "always call X then Y."
+- `POST /api/agent/chat` — the first endpoint in the project that isn't a fixed-purpose
+  CRUD-ish call; it hands the raw student message to the agent and returns whatever it
+  decides to say.
+
+**Why these choices**
+- Stages 2/3's agents (`KnowledgeExtractionAgent`, `QuizGenerationAgent`) are each called
+  from exactly one place, for exactly one job — they don't need tool calling, a direct
+  prompt-in/struct-out call is simpler and cheaper. `LearningAgent` is different: it's the
+  one meant to field arbitrary requests ("what's in lecture 3?", "quiz me on lecture 5"),
+  so it's the one that needs to *choose* what to do rather than being told.
+- Tools were written as thin wrappers over existing services rather than new logic, on
+  purpose — the harness principle here is that the model's capabilities should be exactly
+  the same capabilities the rest of the app already exposes through its own services, not
+  a separate, parallel set of "things the AI can do." One service method, one tool,
+  no duplication.
+- The system prompt explicitly tells the model to ask for a lecture id rather than
+  guessing one — with no student/session/course concept yet (that's Stage 8), the agent
+  has no way to know "which lecture the student means" on its own, so the honest instruction
+  is to ask, not to hallucinate an id.
+- This is the concrete answer to the target role's "Agent framework... toolchains...
+  Harness Engineering" line: current practice describes a harness as more than a system
+  prompt — instructions, tools, runtime, persistent state and feedback channels together
+  ([LangChain: Anatomy of an Agent Harness](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness)).
+  `LectureTools` + `LearningAgent` + the persisted state from Stages 1–4 are the first three
+  of those four pieces; the feedback/evaluation piece is Stage 6.
+
+**Issues faced**
+- None at compile time — `ChatClient.Builder.defaultTools(Object...)` and the
+  `@Tool`/`@ToolParam` annotations resolved on the first attempt against the same Spring AI
+  BOM version already in use.
+- Same open item as every prior stage: compile-verified only. `/api/agent/chat` is the
+  single most important thing to manually test once a live model is available, since tool
+  selection (does the model actually call `getLectureKnowledge` when asked "what's lecture
+  3 about?" instead of making something up) can't be confirmed by the compiler.

@@ -14,8 +14,8 @@ is the plan, DEVLOG is the diary.
 | SQL | PostgreSQL throughout | ✅ In use |
 | JavaScript / React / Streamlit-style demos | Stage 10 (Frontend) | ⬜ Not started |
 | LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | 🔶 In progress (2,3,4 done) |
-| Agent framework, tool calling | Stage 5 (Agent Tools) | ⬜ Not started |
-| Harness Engineering | Stage 5 + Stage 6 | ⬜ Not started |
+| Agent framework, tool calling | Stage 5 (Agent Tools) | ✅ Done |
+| Harness Engineering | Stage 5 + Stage 6 | 🔶 In progress (5 done) |
 | Sandbox / simulation environment | Stage 7 (Exam Simulation) | ⬜ Not started |
 | Personalized memory | Stage 8 (Student Memory & Personalization) | ⬜ Not started |
 | Skills (as in: reusable agent capabilities) | Stage 5 | ⬜ Not started |
@@ -66,14 +66,15 @@ them deterministically (the correct choice is already known from Stage 3 — no 
 needed to mark multiple-choice) and returns per-question correctness + explanation.
 This closes the loop: transcript → key pointers → quiz → self-test → score. Details: [DEVLOG.md](DEVLOG.md#stage-4--student-answers--automatic-marking).
 
-### ⬜ Stage 5 — Agent framework & tools (Harness Engineering)
-Formalize what's currently three separate agent classes into one `LearningAgent` that
-reasons over which **tool** to call (`generateQuiz`, `getLectureKnowledge`,
-`getStudentHistory`, `identifyWeakTopics`) via Spring AI's tool-calling support, instead
-of the controller wiring services together directly. This is the concrete deliverable
-behind the JD's "Agent framework" and "toolchains" line — current production harnesses
-are described as more than a prompt: system prompt + tools + runtime + persistent state +
-feedback loop ([LangChain: Anatomy of an Agent Harness](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness); [Databricks: What is an AI Agent Harness?](https://www.databricks.com/blog/ai-harness)).
+### ✅ Stage 5 — Agent framework & tools (Harness Engineering)
+`LearningAgent` reasons over which **tool** to call (`getLectureKnowledge`,
+`generateQuiz`, via `LectureTools`) using Spring AI's tool-calling support, instead of a
+controller wiring services together in a fixed order. `getStudentHistory`/
+`identifyWeakTopics` tools are deferred to Stages 6/8 — no student/history concept exists
+yet to back them. `POST /api/agent/chat`. This is the concrete deliverable behind the
+JD's "Agent framework" and "toolchains" line — current production harnesses are described
+as more than a prompt: system prompt + tools + runtime + persistent state + feedback loop
+([LangChain: Anatomy of an Agent Harness](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness); [Databricks: What is an AI Agent Harness?](https://www.databricks.com/blog/ai-harness)). Details: [DEVLOG.md](DEVLOG.md#stage-5--agent-framework--tools-harness-engineering).
 
 ### ⬜ Stage 6 — Evaluation Agent (automatic evaluation system)
 After each quiz attempt, aggregate per-topic accuracy and use an `EvaluationAgent` to
