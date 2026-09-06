@@ -1,9 +1,11 @@
 package com.examagent.controller;
 
+import com.examagent.dto.EvaluationResult;
 import com.examagent.dto.LectureKnowledge;
 import com.examagent.dto.LectureResponse;
 import com.examagent.model.Lecture;
 import com.examagent.repository.LectureRepository;
+import com.examagent.service.EvaluationService;
 import com.examagent.service.LectureAnalysisService;
 import com.examagent.service.LectureService;
 import org.springframework.http.ResponseEntity;
@@ -22,13 +24,16 @@ public class LectureController {
     private final LectureService lectureService;
     private final LectureRepository lectureRepository;
     private final LectureAnalysisService lectureAnalysisService;
+    private final EvaluationService evaluationService;
 
     public LectureController(LectureService lectureService,
                               LectureRepository lectureRepository,
-                              LectureAnalysisService lectureAnalysisService) {
+                              LectureAnalysisService lectureAnalysisService,
+                              EvaluationService evaluationService) {
         this.lectureService = lectureService;
         this.lectureRepository = lectureRepository;
         this.lectureAnalysisService = lectureAnalysisService;
+        this.evaluationService = evaluationService;
     }
 
     @PostMapping(consumes = "multipart/form-data")
@@ -64,5 +69,14 @@ public class LectureController {
     @GetMapping("/{id}/knowledge")
     public LectureKnowledge knowledge(@PathVariable Long id) {
         return lectureAnalysisService.getKnowledge(id);
+    }
+
+    /**
+     * Aggregates every recorded QuizAttempt against this lecture into per-topic accuracy
+     * and returns EvaluationAgent's weak/strong-topic verdict and recommendations.
+     */
+    @GetMapping("/{id}/evaluation")
+    public EvaluationResult evaluation(@PathVariable Long id) {
+        return evaluationService.evaluateLecture(id);
     }
 }

@@ -15,11 +15,11 @@ is the plan, DEVLOG is the diary.
 | JavaScript / React / Streamlit-style demos | Stage 10 (Frontend) | ⬜ Not started |
 | LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | 🔶 In progress (2,3,4 done) |
 | Agent framework, tool calling | Stage 5 (Agent Tools) | ✅ Done |
-| Harness Engineering | Stage 5 + Stage 6 | 🔶 In progress (5 done) |
-| Sandbox / simulation environment | Stage 7 (Exam Simulation) | ⬜ Not started |
+| Harness Engineering | Stage 5 + Stage 6 | ✅ Done |
+| Sandbox / simulation environment | Stage 7 (Exam Simulation) | ✅ Done |
 | Personalized memory | Stage 8 (Student Memory & Personalization) | ⬜ Not started |
 | Skills (as in: reusable agent capabilities) | Stage 5 | ⬜ Not started |
-| Automatic evaluation system | Stage 6 (Evaluation Agent) | ⬜ Not started |
+| Automatic evaluation system | Stage 6 (Evaluation Agent) | ✅ Done |
 | GPU compute resource management/scheduling | Stage 11 (stretch — see note) | ⬜ Not started |
 
 Everything below the table is the same set of stages, in build order, with detail.
@@ -76,17 +76,21 @@ JD's "Agent framework" and "toolchains" line — current production harnesses ar
 as more than a prompt: system prompt + tools + runtime + persistent state + feedback loop
 ([LangChain: Anatomy of an Agent Harness](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness); [Databricks: What is an AI Agent Harness?](https://www.databricks.com/blog/ai-harness)). Details: [DEVLOG.md](DEVLOG.md#stage-5--agent-framework--tools-harness-engineering).
 
-### ⬜ Stage 6 — Evaluation Agent (automatic evaluation system)
-After each quiz attempt, aggregate per-topic accuracy and use an `EvaluationAgent` to
-classify weak/strong topics and produce a recommendation, not just a percentage score.
-Directly answers the JD's "automatic evaluation system" line.
+### ✅ Stage 6 — Evaluation Agent (automatic evaluation system)
+Aggregates per-topic accuracy across every quiz attempt on a lecture (deterministic, no
+LLM) and uses `EvaluationAgent` to classify weak/strong topics, an overall readiness
+label, and recommendations — not just a percentage score. `GET /api/lectures/{id}/evaluation`.
+Directly answers the JD's "automatic evaluation system" line. Currently scoped per-lecture
+rather than per-student (no account concept exists yet — see Stage 8). Details: [DEVLOG.md](DEVLOG.md#stage-6--evaluation-agent-automatic-evaluation-system).
 
-### ⬜ Stage 7 — Exam Simulation (sandbox / simulation environment)
-A timed, controlled "exam mode": fixed question count, topic distribution, time limit,
-no going back, single final score + readiness estimate. This is the JD's "sandbox and
-simulation environment" concept applied to an exam rather than a code sandbox — same
-idea (a bounded, controlled environment the agent operates a session inside of), applied
-to the domain this project is actually about.
+### ✅ Stage 7 — Exam Simulation (sandbox / simulation environment)
+A timed, controlled "exam mode" wrapping the existing Quiz/QuizAttempt pipeline rather
+than duplicating it: fixed question count, time limit, single submission, deterministic
+readiness estimate. `POST /api/lectures/{id}/exam`, `GET /api/exams/{id}`,
+`POST /api/exams/{id}/submit`. This is the JD's "sandbox and simulation environment"
+concept applied to an exam rather than a code sandbox — same idea (a bounded, controlled
+environment a session runs inside of), applied to the domain this project is actually
+about. Details: [DEVLOG.md](DEVLOG.md#stage-7--exam-simulation-sandbox--simulation-environment).
 
 ### ⬜ Stage 8 — Personalized memory
 Persist student history (attempts, per-topic accuracy over time) and feed a summary of

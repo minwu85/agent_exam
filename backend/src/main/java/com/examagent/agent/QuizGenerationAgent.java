@@ -53,13 +53,13 @@ public class QuizGenerationAgent {
                   the relevant concept - this is shown to the student after they answer
                 """.formatted(
                 lectureTitle,
-                bulletList(knowledge.learningGoals()),
+                PromptText.bulletList(knowledge.learningGoals()),
                 knowledge.keyConcepts().stream()
                         .map(c -> "- %s (%s): %s".formatted(c.topic(), c.importance(), c.summary()))
                         .reduce("", (a, b) -> a + b + "\n"),
-                bulletList(knowledge.keyTerms()),
-                bulletList(knowledge.commonMistakes()),
-                bulletList(knowledge.examTopics()),
+                PromptText.bulletList(knowledge.keyTerms()),
+                PromptText.bulletList(knowledge.commonMistakes()),
+                PromptText.bulletList(knowledge.examTopics()),
                 questionCount
         );
 
@@ -67,13 +67,5 @@ public class QuizGenerationAgent {
                 .user(prompt)
                 .call()
                 .entity(QuizDraft.class);
-    }
-
-    private String bulletList(Iterable<String> items) {
-        StringBuilder sb = new StringBuilder();
-        for (String item : items) {
-            sb.append("- ").append(item).append("\n");
-        }
-        return sb.isEmpty() ? "(none provided)" : sb.toString();
     }
 }

@@ -42,6 +42,23 @@ flowchart TD
     LA -.->|tool call| LT[LectureTools]
     LT --> AS
     LT --> QS
+
+    U -->|GET /api/lectures/id/evaluation| C
+    C --> ES[EvaluationService]
+    ES -->|aggregate AnswerRecords\nper topic, no LLM| DB
+    ES --> EA[EvaluationAgent]
+    EA -->|prompt with computed stats| Claude
+    Claude -->|weak/strong topics,\nreadiness, recommendations| EA
+
+    U -->|POST /api/lectures/id/exam\ncount, timeLimitMinutes| EC[ExamController]
+    EC --> EXS[ExamService]
+    EXS -->|reuses| QS
+    EXS -->|save session + deadline| DB
+
+    U -->|POST /api/exams/id/submit\nbefore deadline, once only| EC
+    EC --> EXS
+    EXS -->|reuses| QMS
+    EXS -->|deterministic score threshold,\nno LLM| EC
 ```
 
 ---
@@ -266,3 +283,109 @@ flowchart TD
   single most important thing to manually test once a live model is available, since tool
   selection (does the model actually call `getLectureKnowledge` when asked "what's lecture
   3 about?" instead of making something up) can't be confirmed by the compiler.
+
+---
+
+## Stage 6 — Evaluation Agent (automatic evaluation system)
+
+**What was built**
+- `TopicStats` (dto): `topic`, `totalAnswered`, `correctAnswered`, `accuracy` — computed
+  with plain Java, no LLM involved.
+- `EvaluationService.evaluateLecture(lectureId)`: finds every `Quiz` generated from the
+  lecture, every `QuizAttempt` against those quizzes, and tallies `AnswerRecord`s by
+  `Question.topic` into `TopicStats`.
+- `EvaluationDraft` (dto, the model's raw output) / `EvaluationResult` (dto, the API
+  response = `EvaluationDraft` + the `TopicStats` it was computed from) — kept as two
+  types on purpose, see below.
+- `EvaluationAgent`: takes the lecture's title, its `LectureKnowledge`, and the computed
+  `TopicStats`, and asks the model to classify weak/strong topics, an overall readiness
+  label (`NOT_READY`/`DEVELOPING`/`MODERATE`/`READY`), and 3-5 recommendations — explicitly
+  told to treat the given numbers as ground truth, not to recompute them.
+- `GET /api/lectures/{id}/evaluation` on `LectureController`.
+- Small refactor while writing this: `QuizGenerationAgent`'s private `bulletList` helper
+  (needed again here) moved to a shared package-private `PromptText` utility instead of
+  being copy-pasted a second time.
+
+**Why these choices**
+- Split `EvaluationDraft`/`EvaluationResult` instead of one record with everything: if the
+  model's structured-output type includes `topicStats`, nothing stops it from "helpfully"
+  inventing or rounding those numbers itself. Keeping the deterministic numbers out of the
+  type the model fills in, and merging them in afterward in code, removes that failure mode
+  entirely rather than just prompting against it.
+- Evaluation is scoped **per lecture, across all attempts**, not per-student — there is no
+  student/account/session concept anywhere in the app yet. Scoping by lecture is the
+  correct granularity for a single-user tool today, and is a one-line repository query
+  change to re-scope by student once Stage 8 adds that concept — the tally logic itself
+  doesn't need to change, only which attempts get fed into it.
+- The prompt explicitly forbids the model from re-deriving the percentages ("treat these
+  numbers as ground truth") for the same reason Stage 4's marking is deterministic: a
+  known, already-computed quantity should not be handed to an LLM to potentially get
+  slightly wrong.
+
+**Issues faced**
+- None at compile time. `findByQuizIdIn(List<Long>)` on `QuizAttemptRepository` — a
+  derived query traversing the `quiz.id` nested property — resolved correctly without
+  needing a custom `@Query`.
+- Same open item as every stage so far: compile-verified only, not yet run against a real
+  quiz attempt history. Also newly blocked on something outside the app entirely: Docker
+  Desktop's WSL2 backend reports hardware virtualization (Intel VT-x) is disabled in this
+  machine's BIOS/UEFI firmware — `wsl --status` names it directly. That's a firmware
+  setting, not something fixable from a terminal; it needs a manual BIOS visit and reboot
+  before Docker (and therefore Postgres, and therefore any live end-to-end test) can work
+  on this machine.
+- Update: VT-x was confirmed enabled in firmware (Task Manager → Performance → CPU shows
+  "Virtualisation: Enabled") after the BIOS visit, but `wsl --status` still reports the
+  same error. The remaining gap is a Windows optional component ("Virtual Machine
+  Platform") that WSL's own message says isn't on, distinct from the firmware bit -
+  `wsl.exe --install --no-distribution` (run elevated) is what WSL itself suggests.
+  Checking or changing this needs an elevated shell, which this session doesn't have
+  (`Get-WindowsOptionalFeature` itself failed with "requires elevation") - genuinely
+  outside what's fixable from here, left for the user to run.
+
+---
+
+## Stage 7 — Exam Simulation (sandbox / simulation environment)
+
+**What was built**
+- `ExamStatus` enum (`IN_PROGRESS`, `SUBMITTED`, `EXPIRED`) and `ExamSession` entity: wraps
+  a `Quiz` with `startedAt`, `timeLimitSeconds`, `status`, and (once graded) a link to the
+  resulting `QuizAttempt`. `deadline()`/`isExpired(Instant)` are plain entity methods.
+- `ExamService`: `startExam` generates a quiz via the existing `QuizService` (same
+  `QuizGenerationAgent` as Stage 3 — an exam's questions are not a different kind of
+  content) and wraps it in a new `ExamSession`. `submitExam` enforces the two things a
+  practice quiz doesn't: reject if the session isn't `IN_PROGRESS` (already submitted),
+  and reject if `Instant.now()` is past the deadline (marking the session `EXPIRED` first)
+  — otherwise delegates to the existing `QuizMarkingService.submit(...)` unchanged.
+- `estimateReadiness(QuizAttempt)`: a plain score-percentage threshold
+  (`READY`/`MODERATE`/`DEVELOPING`/`NOT_READY`) — deliberately not a second call to
+  `EvaluationAgent`; see below.
+- Endpoints: `POST /api/lectures/{id}/exam?count=&timeLimitMinutes=`,
+  `GET /api/exams/{id}`, `POST /api/exams/{id}/submit`.
+
+**Why these choices**
+- An exam is modeled as *constraints wrapped around* the existing Quiz/QuizAttempt
+  pipeline, not a parallel implementation. `ExamSession` has no `questions` or `answers`
+  fields of its own — it references a `Quiz` and (later) a `QuizAttempt` and adds nothing
+  but timing/state. This is what the roadmap's framing of "sandbox" as *a bounded,
+  controlled environment the agent operates a session inside of* actually means in
+  practice: the content-generation and grading logic underneath don't change, only what's
+  allowed to happen around them (one shot, before a deadline).
+- `estimateReadiness` intentionally does not call an LLM. `EvaluationAgent` (Stage 6)
+  already exists for reasoned, multi-attempt, per-topic feedback; re-running something
+  similar per single exam submission would be a slower, costlier, less consistent version
+  of a plain `score/total` threshold that a percentage already answers just as well. The
+  two are meant to coexist: `/submit` returns an instant, free, deterministic readiness
+  label, `GET /api/lectures/{id}/evaluation` (Stage 6) gives the deeper "why" whenever the
+  student wants it, across every attempt including exams (`QuizAttempt`/`AnswerRecord`
+  don't distinguish exam-mode attempts from practice ones, so Stage 6 sees both).
+- Expiry is checked, not enforced by a scheduled job — a session past its deadline simply
+  fails validation the next time someone tries to submit against it, flipping its status
+  to `EXPIRED` at that point. Good enough for a single-user tool; a background sweep to
+  proactively expire stale sessions is a Stage-11-frontend-era concern (a UI countdown
+  timer needs it more than the backend does).
+
+**Issues faced**
+- None at compile time.
+- Same open item as every stage: compile-verified only. Additionally still blocked on the
+  Windows optional component issue above — Docker/Postgres still not reachable from this
+  machine as of this stage, so Stages 1–7 remain entirely unexercised end-to-end.
