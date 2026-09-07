@@ -6,7 +6,9 @@ which records *why* each decision was made and what went wrong along the way —
 is the plan, DEVLOG is the diary.
 
 
+
 ## Target skills → build stage mapping
+
 
 | Target requirement | Where it's covered | Status |
 |---|---|---|
