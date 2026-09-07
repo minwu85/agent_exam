@@ -5,6 +5,7 @@ stage maps to the target job's required skills. Read alongside [DEVLOG.md](DEVLO
 which records *why* each decision was made and what went wrong along the way — this file
 is the plan, DEVLOG is the diary.
 
+
 ## Target skills → build stage mapping
 
 | Target requirement | Where it's covered | Status |
