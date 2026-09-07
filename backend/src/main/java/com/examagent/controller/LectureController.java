@@ -7,6 +7,7 @@ import com.examagent.model.Lecture;
 import com.examagent.repository.LectureRepository;
 import com.examagent.service.EvaluationService;
 import com.examagent.service.LectureAnalysisService;
+import com.examagent.service.LectureIndexingService;
 import com.examagent.service.LectureService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -16,6 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/lectures")
@@ -25,15 +27,18 @@ public class LectureController {
     private final LectureRepository lectureRepository;
     private final LectureAnalysisService lectureAnalysisService;
     private final EvaluationService evaluationService;
+    private final LectureIndexingService lectureIndexingService;
 
     public LectureController(LectureService lectureService,
                               LectureRepository lectureRepository,
                               LectureAnalysisService lectureAnalysisService,
-                              EvaluationService evaluationService) {
+                              EvaluationService evaluationService,
+                              LectureIndexingService lectureIndexingService) {
         this.lectureService = lectureService;
         this.lectureRepository = lectureRepository;
         this.lectureAnalysisService = lectureAnalysisService;
         this.evaluationService = evaluationService;
+        this.lectureIndexingService = lectureIndexingService;
     }
 
     @PostMapping(consumes = "multipart/form-data")
@@ -78,5 +83,18 @@ public class LectureController {
     @GetMapping("/{id}/evaluation")
     public EvaluationResult evaluation(@PathVariable Long id) {
         return evaluationService.evaluateLecture(id);
+    }
+
+    /** Stage 9: chunks and embeds this lecture's text into pgvector. Idempotent - re-running replaces the previous chunks. */
+    @PostMapping("/{id}/index")
+    public ResponseEntity<Void> index(@PathVariable Long id) {
+        lectureIndexingService.index(id);
+        return ResponseEntity.ok().build();
+    }
+
+    /** Manual/debug entry point to the same semantic search LearningAgent uses as a tool (see LectureTools.searchLectureContent). */
+    @GetMapping("/{id}/search")
+    public Map<String, Object> search(@PathVariable Long id, @RequestParam String q) {
+        return Map.of("query", q, "matches", lectureIndexingService.search(id, q, 3));
     }
 }

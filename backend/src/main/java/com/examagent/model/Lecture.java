@@ -35,6 +35,9 @@ public class Lecture {
     @Lob
     private String knowledgeJson;
 
+    /** Set once this lecture's text has been chunked + embedded into the vector store (Stage 9). Null until indexed. */
+    private Instant indexedAt;
+
     @Column(nullable = false)
     private Instant uploadedAt = Instant.now();
 

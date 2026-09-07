@@ -76,6 +76,17 @@ flowchart TD
     AC --> LA
     LA -.->|tool call| ST[StudentTools]
     ST --> ESvc
+
+    U -->|POST /api/lectures/id/index| C
+    C --> LIS[LectureIndexingService]
+    LIS -->|local ONNX embedding\nno API call| EMB[Transformers EmbeddingModel]
+    LIS -->|chunk + embed + store,\nidempotent replace| VS[(pgvector\nvector_store table)]
+
+    U -->|GET /api/lectures/id/search?q=\nor POST /api/agent/chat| C
+    C --> LIS
+    LA -.->|tool call| LT
+    LT -->|searchLectureContent| LIS
+    LIS -->|similaritySearch,\nfiltered by lectureId| VS
 ```
 
 ---
@@ -522,3 +533,70 @@ before the live Postgres test.
   needed (confirmed via `\d quiz_attempt` in the running container). Not yet verified:
   `StudentTools.getStudentHistory` actually being called correctly by `LearningAgent` -
   needs a live model, same open item as everything else that calls Claude.
+
+---
+
+## Stage 9 — RAG / Knowledge base (pgvector)
+
+**What was built**
+- Added `spring-ai-starter-model-transformers` — Spring AI's local, in-JVM ONNX embedding
+  model (all-MiniLM-L6-v2, run via DJL/PyTorch, downloaded once and cached on first use).
+  This finally provides the `EmbeddingModel` bean that `PgVectorStoreAutoConfiguration`
+  was missing since Stage 1, so the `spring.autoconfigure.exclude` workaround from the
+  Stage 8 smoke-test entry is removed — pgvector's auto-configuration now just works.
+  Chosen specifically to avoid adding *another* external service to run (no Ollama
+  daemon, no OpenAI/other API key) — everything Stage 9 needs runs inside the same JVM.
+- `Lecture.indexedAt` (nullable, mirrors `knowledgeJson`'s "null until analyzed" pattern)
+  and an `indexed` flag on `LectureResponse`.
+- `LectureIndexingService`: `index(lectureId)` splits the lecture's raw text with Spring
+  AI's `TokenTextSplitter`, tags each chunk's metadata with `lectureId`/`lectureTitle`,
+  and calls `VectorStore.add(...)` - but deletes any existing chunks for that lecture
+  first (`VectorStore.delete(filterExpression)`), so re-indexing replaces rather than
+  duplicates. `search(lectureId, query, topK)` runs `VectorStore.similaritySearch(...)`
+  with a `lectureId` filter, so results never cross between lectures.
+- `LectureTools.searchLectureContent(lectureId, query)`: a new tool alongside
+  `getLectureKnowledge`/`generateQuiz`, so `LearningAgent` can pull a specific verbatim
+  passage when the structured `LectureKnowledge` summary isn't detailed enough to answer
+  precisely - the "agentic RAG" pattern from the original roadmap research (the agent
+  decides if/when to retrieve, rather than every prompt always retrieving).
+- Endpoints: `POST /api/lectures/{id}/index`, `GET /api/lectures/{id}/search?q=...` (a
+  manual/debug entry point to the exact same search the agent tool uses).
+
+**Why these choices**
+- RAG is additive, not a replacement for Stage 2/3. `KnowledgeExtractionAgent` and
+  `QuizGenerationAgent` still work off the capped whole transcript / `LectureKnowledge` as
+  before - that remains the right approach for "understand/quiz this one lecture as a
+  whole." What Stage 9 adds is precision lookup: a specific verbatim passage on demand,
+  useful once transcripts exceed the cap or search needs to span multiple lectures. Both
+  approaches coexist deliberately rather than one replacing the other.
+- Indexing is a separate, explicit step (`POST /.../index`), not automatic on upload or
+  analysis - same reasoning as Stage 2's separate `/analyze` step: keeps upload fast and
+  makes re-indexing (e.g. after changing chunk-size strategy) possible without
+  re-uploading or re-extracting text.
+- Search results are scoped to one lecture via a metadata filter rather than searching
+  globally across every lecture in the vector store. Cross-lecture search is a real future
+  use case (roadmap's own note: "worth adopting once there's more than one lecture per
+  course to search across") but scoping it now would mean the tool could accidentally
+  surface another course's content in an answer - narrower and correct first, broadened
+  deliberately later once there's an actual multi-lecture scenario to design against.
+
+**Issues faced**
+- **Real bug, caught live**: the first `/index` call failed with
+  `org.postgresql.util.PSQLException: ERROR: relation "public.vector_store" does not
+  exist`, despite a log line reading `Initializing PGVectorStore schema for table:
+  vector_store` right before it — that log line fires regardless of whether schema
+  creation actually happens. Cause: `spring.ai.vectorstore.pgvector.initialize-schema`
+  defaults to `false` (deliberately, same caution as `spring.jpa.hibernate.ddl-auto`
+  defaulting conservatively) - Stage 1 never set it because nothing exercised pgvector
+  until now. Fixed with `spring.ai.vectorstore.pgvector.initialize-schema=true` in
+  `application.properties`, with a comment noting a real deployment would use an explicit
+  migration instead of auto-init.
+- Everything else verified live end-to-end on the first attempt after that fix: uploaded
+  a real PDF, `POST /api/lectures/{id}/index` succeeded and flipped `indexed: true`,
+  `GET /api/lectures/{id}/search?q=...` returned real semantically-matched content for
+  two different natural-language queries against real locally-computed embeddings stored
+  in real pgvector. Confirmed idempotency directly against the container
+  (`SELECT count(*) FROM vector_store WHERE metadata->>'lectureId' = '2'`): 1 row before
+  a second `/index` call, 1 row after - no duplication.
+- Not yet verified: `LectureTools.searchLectureContent` actually being invoked correctly
+  by `LearningAgent` (needs a live model - same open item as every Claude-calling piece).

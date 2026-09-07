@@ -10,7 +10,7 @@ is the plan, DEVLOG is the diary.
 | Target requirement | Where it's covered | Status |
 |---|---|---|
 | Generative AI tools, prompt engineering | Stage 2 (Knowledge Extraction Agent) | ✅ Done |
-| Python + OCR/LLM experimentation | Stage 9 (OCR) | ⬜ Not started |
+| Python + OCR/LLM experimentation | Stage 10 (OCR) | ⬜ Not started |
 | SQL | PostgreSQL throughout | ✅ In use |
 | JavaScript / React / Streamlit-style demos | Stage 10 (Frontend) | ⬜ Not started |
 | LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | ✅ Done (2,3,4,5,6,7,8 all built) |
@@ -34,7 +34,7 @@ Everything below the table is the same set of stages, in build order, with detai
 - **Frontend:** plain REST via Postman/curl through Stage 6, then React + TypeScript from
   Stage 10 onward (matches the JD's "modern web frameworks" line without building UI
   before the API contract is stable).
-- **Python:** introduced only at Stage 9 for OCR experimentation — the JD explicitly wants
+- **Python:** introduced only at Stage 10 for OCR experimentation — the JD explicitly wants
   Python + OCR familiarity, and Python's OCR/ML tooling (pytesseract, easyocr, layout
   models) is materially better than Java's for this one slice, called from the Java
   backend as a subprocess or small FastAPI sidecar rather than rewriting the app in Python.
@@ -102,12 +102,15 @@ on demand by a tool, not a full history dumped into every prompt ([MachineLearni
 history back into *quiz generation* itself (so question selection adapts) is not yet
 done — currently only readable via evaluation/the chat agent. Details: [DEVLOG.md](DEVLOG.md#stage-8--personalized-memory).
 
-### ⬜ Stage 9 — RAG / Knowledge base (pgvector)
-Chunk + embed lecture transcripts into pgvector; let the Quiz/Evaluation agents retrieve
-relevant chunks instead of relying on the capped 15k-char transcript from Stage 2. 2026
-practice trends toward *agentic* RAG — the agent decides whether/what/when to retrieve,
-rather than always retrieving once up front ([RAG in 2026: Architecture Shifts](https://medium.com/@elammarisoufiane/rag-in-2026-architecture-shifts-emerging-patterns-and-what-it-means-for-java-developers-6f2803e39787)) — worth adopting once there's more than one lecture per course to
-search across.
+### ✅ Stage 9 — RAG / Knowledge base (pgvector)
+Lecture text is chunked and embedded into pgvector using a local, in-JVM ONNX embedding
+model (no external API/key needed) via `LectureIndexingService`; a new `searchLectureContent`
+agent tool lets `LearningAgent` pull a specific verbatim passage on demand — additive to,
+not a replacement for, Stage 2/3's capped-transcript approach. `POST /api/lectures/{id}/index`,
+`GET /api/lectures/{id}/search?q=`. Matches the *agentic* RAG pattern from 2026 practice —
+the agent decides whether/what/when to retrieve, rather than always retrieving once up
+front ([RAG in 2026: Architecture Shifts](https://medium.com/@elammarisoufiane/rag-in-2026-architecture-shifts-emerging-patterns-and-what-it-means-for-java-developers-6f2803e39787)). Cross-lecture search (once there's more than one lecture per
+course) is a deliberate follow-up, not done yet — see [DEVLOG.md](DEVLOG.md#stage-9--rag--knowledge-base-pgvector).
 
 ### ⬜ Stage 10 — OCR + Python sidecar
 Accept handwritten/scanned notes as input, not just text-native PDFs. Python
