@@ -52,6 +52,18 @@ public class LectureController {
         }
     }
 
+    /** Stage 10: for scanned/handwritten note images rather than text-native PDFs - routes through the Python OCR sidecar instead of PagePdfDocumentReader. */
+    @PostMapping(value = "/upload-scan", consumes = "multipart/form-data")
+    public ResponseEntity<LectureResponse> uploadScan(@RequestParam("file") MultipartFile file,
+                                                       @RequestParam("title") String title) {
+        try {
+            Lecture lecture = lectureService.uploadScanAndExtract(file, title);
+            return ResponseEntity.ok(LectureResponse.from(lecture));
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to process uploaded scan", e);
+        }
+    }
+
     @GetMapping
     public List<LectureResponse> list() {
         return lectureRepository.findAll().stream().map(LectureResponse::from).toList();

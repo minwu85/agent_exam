@@ -10,17 +10,25 @@ is the plan, DEVLOG is the diary.
 | Target requirement | Where it's covered | Status |
 |---|---|---|
 | Generative AI tools, prompt engineering | Stage 2 (Knowledge Extraction Agent) | ✅ Done |
-| Python + OCR/LLM experimentation | Stage 10 (OCR) | ⬜ Not started |
+| Python + OCR/LLM experimentation | Stage 10 (OCR) | ✅ Done |
 | SQL | PostgreSQL throughout | ✅ In use |
-| JavaScript / React / Streamlit-style demos | Stage 10 (Frontend) | ⬜ Not started |
+| JavaScript / React / Streamlit-style demos | Stage 11 (Frontend) | ✅ Done |
 | LLM/Agent project experience, using large-model capability to solve problems | Stages 2–8 | ✅ Done (2,3,4,5,6,7,8 all built) |
 | Agent framework, tool calling | Stage 5 (Agent Tools) | ✅ Done |
 | Harness Engineering | Stage 5 + Stage 6 | ✅ Done |
 | Sandbox / simulation environment | Stage 7 (Exam Simulation) | ✅ Done |
 | Personalized memory | Stage 8 (Student Memory & Personalization) | ✅ Done |
-| Skills (as in: reusable agent capabilities) | Stage 5 | ⬜ Not started |
+| Skills (as in: reusable agent capabilities) | Stage 5 | 🔶 Partial — see note below table |
 | Automatic evaluation system | Stage 6 (Evaluation Agent) | ✅ Done |
-| GPU compute resource management/scheduling | Stage 11 (stretch — see note) | ⬜ Not started |
+| GPU compute resource management/scheduling | Stage 12 (stretch — see note) | ✅ Done |
+
+**Note on "Skills"**: `LectureTools`/`StudentTools` (Stages 5/8/9) give `LearningAgent`
+reusable capabilities, which covers the *substance* of "Skills." What's genuinely missing
+is the *packaging* concept some agent frameworks mean by "Skills" specifically — a
+capability declared as a standalone, versioned, independently-loadable unit (its own
+manifest/metadata, addable to an agent without touching the agent's own code) rather than
+a Java method the agent's constructor wires in directly. Honest gap, not a done item — the
+tools work is real, the packaging abstraction on top of it isn't.
 
 Everything below the table is the same set of stages, in build order, with detail.
 
@@ -112,27 +120,36 @@ the agent decides whether/what/when to retrieve, rather than always retrieving o
 front ([RAG in 2026: Architecture Shifts](https://medium.com/@elammarisoufiane/rag-in-2026-architecture-shifts-emerging-patterns-and-what-it-means-for-java-developers-6f2803e39787)). Cross-lecture search (once there's more than one lecture per
 course) is a deliberate follow-up, not done yet — see [DEVLOG.md](DEVLOG.md#stage-9--rag--knowledge-base-pgvector).
 
-### ⬜ Stage 10 — OCR + Python sidecar
-Accept handwritten/scanned notes as input, not just text-native PDFs. Python
-(pytesseract/easyocr) as a small sidecar service the Java backend calls, output text fed
-into the existing Stage 1 pipeline unchanged.
+### ✅ Stage 10 — OCR + Python sidecar
+Accept handwritten/scanned notes as input, not just text-native PDFs. A small Python
+FastAPI service (`ocr-sidecar/`) wraps Tesseract via pytesseract; `OcrClient` calls it
+over HTTP; extracted text feeds into the exact same downstream pipeline (`Lecture` row →
+`/analyze` → `/quiz` → ...) as Stage 1's PDF path, unchanged. `POST /api/lectures/upload-scan`.
+Two real bugs found and fixed along the way (no auto-configured `RestClient.Builder`;
+the JDK HTTP client's default HTTP/2 upgrade attempt silently broke multipart uploads
+against uvicorn) — see [DEVLOG.md](DEVLOG.md#stage-10--ocr--python-sidecar) for the full
+debugging story.
 
-### ⬜ Stage 11 — Frontend (React + TypeScript)
-Upload UI, quiz-taking UI, exam-mode UI with timer, progress dashboard. Deferred this
-late deliberately — the API contract from Stages 1–8 should be stable before building
-against it.
+### ✅ Stage 11 — Frontend (React + TypeScript)
+Vite + React + TypeScript, no UI framework. Upload (PDF or scanned image), lecture
+detail (analyze/index/search/evaluate), quiz and timed-exam players, and a free-form
+chat UI against `LearningAgent`. Built after Stages 1–10 as planned — every endpoint it
+calls already existed and was independently tested. One real bug (an empty-200-body
+response mishandled as if it needed JSON parsing) was caught live by clicking through
+the UI. Details: [DEVLOG.md](DEVLOG.md#stage-11--frontend-react--typescript).
 
-### ⬜ Stage 12 (stretch) — Toy GPU/compute scheduler
+### ✅ Stage 12 (stretch) — Toy GPU/compute scheduler
 The JD's GPU resource-scheduling requirement is a distinct, large infrastructure problem
 (cluster scheduling, elastic allocation across training/inference/eval workloads) that
 doesn't naturally fit inside an exam-prep app and isn't feasible to build for real without
-an actual GPU cluster. As a **portfolio-only stand-in**, worth building a small job queue
-that schedules this app's own batch LLM calls (quiz generation for a whole course,
-bulk re-analysis) across a limited "worker pool" with priority/backpressure — demonstrates
-the scheduling concepts (queueing, priority, elastic worker count) in miniature without
-overclaiming GPU-cluster experience you can speak to honestly in an interview as "the
-scheduling logic, at small scale" rather than as equivalent production GPU-fleet
-experience.
+an actual GPU cluster. Built as a **portfolio-only stand-in**: `JobSchedulerService` — a
+real `ThreadPoolExecutor` + `PriorityBlockingQueue` scheduling this app's own batch LLM
+calls (`ANALYZE_LECTURE`, `GENERATE_QUIZ`) across a limited worker pool, with priority
+ordering, backpressure (429 past 50 queued), and live elastic resizing
+(`POST /api/jobs/scheduler/workers?count=`). Demonstrates the scheduling concepts in
+miniature without overclaiming GPU-cluster experience — the honest framing for an
+interview is "the scheduling logic, at small scale," not equivalent production GPU-fleet
+experience. Details, including what was and wasn't empirically verified: [DEVLOG.md](DEVLOG.md#stage-12-stretch--toy-job-scheduler).
 
 ## Working agreement going forward
 

@@ -19,26 +19,44 @@ import java.util.stream.Collectors;
 public class LectureService {
 
     private final LectureRepository lectureRepository;
+    private final OcrClient ocrClient;
     private final Path uploadDir;
 
-    public LectureService(LectureRepository lectureRepository, @Value("${app.upload-dir}") String uploadDir) {
+    public LectureService(LectureRepository lectureRepository, OcrClient ocrClient,
+                           @Value("${app.upload-dir}") String uploadDir) {
         this.lectureRepository = lectureRepository;
+        this.ocrClient = ocrClient;
         this.uploadDir = Path.of(uploadDir);
     }
 
+    /** Stage 1: text-native PDFs, extracted directly in Java via Spring AI's PagePdfDocumentReader - no OCR involved. */
     public Lecture uploadAndExtract(MultipartFile file, String title) throws IOException {
+        Path storedPath = save(file);
+        String rawText = extractPdfText(storedPath);
+        return saveLecture(title, file.getOriginalFilename(), rawText);
+    }
+
+    /** Stage 10: scanned/handwritten note images, routed through the Python OCR sidecar - see OcrClient. */
+    public Lecture uploadScanAndExtract(MultipartFile file, String title) throws IOException {
+        Path storedPath = save(file);
+        String rawText = ocrClient.extractText(storedPath);
+        return saveLecture(title, file.getOriginalFilename(), rawText);
+    }
+
+    private Path save(MultipartFile file) throws IOException {
         Files.createDirectories(uploadDir);
         String storedFilename = System.currentTimeMillis() + "-" + file.getOriginalFilename();
         Path storedPath = uploadDir.resolve(storedFilename);
         file.transferTo(storedPath);
+        return storedPath;
+    }
 
-        String rawText = extractText(storedPath);
-
-        Lecture lecture = new Lecture(title, file.getOriginalFilename(), rawText);
+    private Lecture saveLecture(String title, String originalFilename, String rawText) {
+        Lecture lecture = new Lecture(title, originalFilename, rawText);
         return lectureRepository.save(lecture);
     }
 
-    private String extractText(Path pdfPath) {
+    private String extractPdfText(Path pdfPath) {
         PagePdfDocumentReader reader = new PagePdfDocumentReader(new FileSystemResource(pdfPath));
         List<Document> pages = reader.get();
         return pages.stream()

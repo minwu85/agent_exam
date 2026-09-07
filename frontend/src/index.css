@@ -1,0 +1,55 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1, h2, h3 {
+  margin: 0 0 0.5rem;
+}
+
+button {
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid #888;
+  background: #f4f4f4;
+  font-size: 0.9rem;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input {
+  font-size: 0.9rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  button {
+    background: #2a2a2e;
+    color: #eee;
+    border-color: #555;
+  }
+  .card {
+    background: #1e1e22 !important;
+    border-color: #3a3a3e !important;
+  }
+  input, select {
+    background: #2a2a2e;
+    color: #eee;
+    border: 1px solid #555;
+  }
+}

@@ -3,6 +3,15 @@ backend/target/
 backend/uploads/
 backend/.mvn/wrapper/maven-wrapper.jar
 
+### Frontend (Vite / React) ###
+frontend/node_modules/
+frontend/dist/
+
+### OCR sidecar (Python) ###
+ocr-sidecar/__pycache__/
+ocr-sidecar/.venv/
+ocr-sidecar/venv/
+
 ### IDE ###
 .idea/
 *.iml

@@ -87,6 +87,28 @@ flowchart TD
     LA -.->|tool call| LT
     LT -->|searchLectureContent| LIS
     LIS -->|similaritySearch,\nfiltered by lectureId| VS
+
+    U -->|POST /api/lectures/upload-scan\nscanned/handwritten image| C
+    C --> LS[LectureService]
+    LS --> OC[OcrClient\nHTTP/1.1 forced]
+    OC -->|multipart POST /ocr| SIDECAR[Python OCR sidecar\nFastAPI + pytesseract]
+    SIDECAR -->|extracted text| OC
+    OC --> LS
+    LS -->|save raw text| DB
+
+    subgraph Frontend [React + TypeScript, Stage 11]
+    UI[Browser UI] -->|fetch /api/... via Vite proxy| C
+    UI --> QC
+    UI --> EC
+    UI --> SC
+    UI --> AC
+    end
+
+    U -->|POST /api/jobs\ntype, lectureId, priority| JC[BatchJobController]
+    JC --> JS[JobSchedulerService\nPriorityBlockingQueue + ThreadPoolExecutor]
+    JS -.->|dispatches to a worker thread| AS
+    JS -.->|dispatches to a worker thread| QS
+    JC -->|POST /scheduler/workers?count=\nelastic resize| JS
 ```
 
 ---
@@ -600,3 +622,194 @@ before the live Postgres test.
   a second `/index` call, 1 row after - no duplication.
 - Not yet verified: `LectureTools.searchLectureContent` actually being invoked correctly
   by `LearningAgent` (needs a live model - same open item as every Claude-calling piece).
+
+---
+
+## Stage 10 — OCR + Python sidecar
+
+**What was built**
+- `ocr-sidecar/` — a standalone Python/FastAPI service (`main.py`): `GET /health` (confirms
+  Tesseract is actually callable), `POST /ocr` (multipart image → `{"text", "engine",
+  "filename"}`). Uses `pytesseract` wrapping a locally-installed Tesseract 5.4 binary
+  (`winget install --id UB-Mannheim.TesseractOCR`), chosen over EasyOCR specifically to
+  avoid pulling in PyTorch (EasyOCR's dependency) on a machine with only ~26GB of disk
+  free at the time - Tesseract's installer is a ~50MB native binary with no ML runtime.
+- `LectureService` split into two upload paths sharing one `save()`/`saveLecture()` core:
+  `uploadAndExtract` (Stage 1, PDF text via `PagePdfDocumentReader`, unchanged) and the new
+  `uploadScanAndExtract` (routes through `OcrClient` instead).
+- `OcrClient`: a plain HTTP client to the sidecar, entirely self-contained - it's the only
+  place in the Java app that knows the sidecar exists.
+- `POST /api/lectures/upload-scan` on `LectureController`, parallel to the existing
+  `POST /api/lectures` (PDF) endpoint.
+- `app.ocr.sidecar-url` config property (default `http://localhost:8000`).
+
+**Why these choices**
+- Python + pytesseract/Tesseract rather than a Java OCR library: Tesseract's Python
+  bindings and surrounding tooling are simply more mature and better documented, and this
+  is exactly the kind of narrow, well-scoped reason to add a second language for one slice
+  of the app - not a reason to reconsider the Java backend.
+- A separate HTTP microservice, not a subprocess call from Java: keeps the OCR engine
+  swappable (a different Python OCR library, or even a different language entirely, could
+  replace `ocr-sidecar/` without touching `OcrClient`'s contract) and keeps Java from
+  needing to manage Python subprocess lifecycles, stdout/stderr piping, or Python's own
+  dependency environment.
+- `uploadScanAndExtract` reuses the *same* `saveLecture(...)` and downstream pipeline as
+  the PDF path - once text exists on a `Lecture` row, Stages 2 onward (`/analyze`,
+  `/quiz`, `/index`, evaluation) don't know or care whether that text came from
+  `PagePdfDocumentReader` or OCR. This was true by construction, not by extra effort -
+  the refactor just gave the two extraction paths a shared tail.
+
+**Issues faced — two real, non-obvious bugs, both only findable by actually running it**
+1. **Spring Boot 4 has no auto-configured `RestClient.Builder` bean** from
+   `spring-boot-starter-webmvc` alone (same class of gap as Stage 8's `ObjectMapper`
+   bean) - `OcrClient`'s constructor failed with `UnsatisfiedDependencyException` on
+   startup. Fixed by building the `RestClient` directly (`RestClient.builder()...build()`)
+   instead of injecting an auto-configured builder.
+2. **The actual multipart request never reached FastAPI as a file upload**, despite every
+   textbook-correct attempt: a bare `Resource` in a `MultiValueMap`, an explicit
+   `MULTIPART_FORM_DATA` content type, an `HttpEntity` with a `Content-Disposition`
+   header - all produced the identical FastAPI error, `422 "file": "Field required"`,
+   as if no file field existed at all. Debugging process: switched to constructing the
+   multipart body as raw bytes by hand (removes all converter-resolution ambiguity), then
+   pointed `OcrClient` at a throwaway Python `http.server` that dumps whatever bytes it
+   receives to a file - confirming the raw bytes Java sent were a **perfectly valid**
+   multipart request (verified by diffing it against curl's own request to the same dumb
+   server). So the bytes were never the problem. The actual cause: the JDK's
+   `java.net.http.HttpClient` (which `RestClient` uses by default) attempts an HTTP/2
+   cleartext ("h2c") upgrade on every request unless told not to - `Connection: Upgrade,
+   HTTP2-Settings` / `Upgrade: h2c` were present in the captured request. uvicorn doesn't
+   handle that upgrade attempt the way the JDK client expects, and the request body never
+   correctly reached FastAPI's parser as a result - the dumb `http.server` never noticed
+   because it doesn't interpret `Connection`/`Upgrade` headers at all, and curl doesn't
+   send an h2c upgrade attempt by default, which is exactly why both of those "control"
+   requests worked while every Java attempt failed identically. Fixed by building the
+   underlying `HttpClient` with `.version(HttpClient.Version.HTTP_1_1)` and wiring it into
+   `RestClient` via `JdkClientHttpRequestFactory`.
+- Once both were fixed, verified fully live end-to-end: generated a real PNG test image
+  (Photosynthesis notes, printed text via PIL) uploaded through
+  `POST /api/lectures/upload-scan`, got back `textLength: 145`, then confirmed via
+  `docker exec ... psql` (`convert_from(lo_get(raw_text::oid), 'UTF8')`, since `@Lob` maps
+  to a Postgres large object) that the actual OCR'd text landed correctly in the database -
+  not just that the endpoint returned 200.
+
+---
+
+## Stage 11 — Frontend (React + TypeScript)
+
+**What was built**
+- `frontend/` — Vite + React + TypeScript, scaffolded fresh (`npm create vite@latest`),
+  no UI framework/component library added - plain CSS, kept deliberately small.
+- `vite.config.ts` proxies `/api/*` to `http://localhost:8080`, so the backend needs zero
+  CORS configuration and the frontend calls plain relative URLs.
+- `types.ts` mirrors the backend's DTO records by hand (no codegen - the contract is
+  small enough that generating a client would be more ceremony than it's worth at this
+  size) and `api.ts` is a single typed `fetch` wrapper covering every endpoint built in
+  Stages 1-10.
+- Components: `UploadForm` (PDF or scanned-image upload, wired to both Stage 1 and Stage
+  10 endpoints), `LectureList`/`LectureDetail` (analyze, index, semantic search,
+  evaluation, quiz/exam generation - covers Stages 2, 3, 6, 7, 9), `QuizPlayer` and
+  `ExamPlayer` (answer questions, submit, see per-question results - Stages 3/4/6/7),
+  `AgentChat` (free-form chat with `LearningAgent` - Stage 5/8's tool-calling agent). A
+  lightweight student name box (no password) creates a `Student` row and threads its id
+  through quiz submissions and evaluation calls, exercising Stage 8's personalization path
+  from the UI.
+- `.claude/launch.json` added so the dev server can be started/previewed by name.
+
+**Why these choices**
+- No component library or CSS framework - at this scope (a handful of screens, no design
+  system to maintain) plain CSS is less to learn/debug than integrating and overriding a
+  library's defaults, and keeps the bundle small.
+- Hand-written types/client rather than an OpenAPI-generated one: the backend has no
+  OpenAPI spec published (would be its own small addition), and the DTO surface is stable
+  and small enough that keeping `types.ts` in sync by hand is genuinely less work than
+  standing up codegen for a project this size. Worth revisiting if the API surface grows
+  much further.
+- Built *after* Stages 1-10 rather than alongside them, as planned from the very first
+  roadmap draft — every endpoint the UI calls already existed and was already
+  independently tested via curl, so the frontend's job was purely to expose an existing,
+  working contract, not to discover what that contract should be.
+
+**Issues faced**
+- TypeScript compiled clean (`tsc --noEmit`) on the first pass - the DTO shapes in
+  `types.ts` matched the backend's JSON exactly.
+- **Real bug, caught by actually clicking the button in the browser** (not by
+  type-checking, which can't catch this): `POST /api/lectures/{id}/index` returns
+  `ResponseEntity.ok().build()` - HTTP 200 with an **empty** body, not 204. The frontend's
+  `request()` helper only special-cased status 204 as "no body to parse," so calling
+  `res.json()` on the empty 200 response threw `Unexpected end of JSON input`, visible
+  directly in the UI. Fixed by reading the response as text first and checking for
+  emptiness, rather than trusting the status code to predict body presence.
+- Verified live against the real running backend (not a mock): the lecture list loaded
+  every lecture created during Stages 1/9/10's testing with correct `analyzed`/`indexed`
+  badges and char counts; clicking "Index for search" then running a semantic search
+  returned real matched text from real pgvector; clicking "Analyze" against a lecture
+  correctly surfaced the backend's real 500 error in the UI (expected - no
+  `ANTHROPIC_API_KEY` is set in this environment), proving error handling works rather
+  than silently failing. Quiz/exam generation and the agent chat remain unverified beyond
+  this same, already-documented API-key blocker - nothing new about the frontend itself is
+  in question there.
+
+---
+
+## Stage 12 (stretch) — Toy job scheduler
+
+**What was built**
+- `com.examagent.scheduler` package: `BatchJob` (a plain, non-JPA POJO tracking one job's
+  lifecycle), `BatchJobType` (`ANALYZE_LECTURE`, `GENERATE_QUIZ`), `BatchJobPriority`
+  (`HIGH`/`NORMAL`/`LOW`, ordinal order is priority order), `BatchJobStatus`
+  (`QUEUED`→`RUNNING`→`SUCCEEDED`/`FAILED`).
+- `JobSchedulerService`: a `ThreadPoolExecutor` backed by a `PriorityBlockingQueue<Runnable>`
+  (real `java.util.concurrent`, not a simulation) with a fixed worker count
+  (`app.scheduler.worker-count`, default 2). Each submitted job is wrapped in a
+  `PriorityTask` (`Runnable` + `Comparable`) that orders by priority first, then submission
+  sequence - so `HIGH` jobs queue-jump `LOW` ones already waiting, but two jobs of the same
+  priority still run in submission order. Backpressure: `submit()` rejects with 429 once
+  50 jobs are queued. Elastic resizing: `resizeWorkerPool(n)` adjusts
+  `setCorePoolSize`/`setMaximumPoolSize` at runtime.
+- `BatchJobController`: `POST /api/jobs` (submit), `GET /api/jobs/{id}` (poll one),
+  `GET /api/jobs` (list all, newest first), `GET /api/jobs/scheduler/status` (pool
+  size/active workers/queue depth/completed count), `POST /api/jobs/scheduler/workers?count=`
+  (the elastic-resize demo).
+
+**Why these choices**
+- This is explicitly **not** a claim of GPU-cluster scheduling experience - see
+  [ROADMAP.md](ROADMAP.md)'s own framing of this stage, written before any code existed
+  here. What it demonstrates honestly, at small scale, is the same *shape* of problem the
+  target role's GPU-scheduling line describes: a limited pool of expensive workers (there,
+  GPUs; here, threads making paid LLM calls), a priority queue deciding what runs next,
+  backpressure when the queue is full, and elastic resizing of worker capacity under load -
+  using real concurrency primitives, not a mock. The honest way to talk about this in an
+  interview is "the scheduling logic, at small scale," not "GPU fleet management."
+- Jobs are in-memory (`ConcurrentHashMap`, not a JPA entity/table) on purpose - this is
+  transient scheduling state (what's queued *right now*), not durable application data.
+  Losing it on restart is the correct behavior for a job queue, unlike losing a `Lecture`
+  or `QuizAttempt` would be.
+- `JobSchedulerService` calls the *existing* `LectureAnalysisService`/`QuizService`
+  directly rather than introducing a new code path for "the same work, but batched" -
+  scheduling is a layer on top of work that already exists, not a reason to duplicate it
+  (same principle Stage 7's `ExamService` followed by reusing `QuizService`/`QuizMarkingService`).
+
+**Issues faced**
+- None at compile time.
+- Verified live end-to-end, including the exact interaction the API-key blocker usually
+  prevents from being interesting: submitted jobs were genuinely dispatched to worker
+  threads and genuinely called the real `LectureAnalysisService`/`QuizService`, which
+  genuinely failed with a real `401 authentication_error` from Anthropic (no
+  `ANTHROPIC_API_KEY` set) - proving the scheduler's dispatch-to-real-work path is correct
+  even though the work itself can't complete here. A separate job against a lecture that
+  hadn't been analyzed yet correctly failed with `QuizService`'s own real precondition
+  error, not a generic scheduler failure - confirming errors propagate through
+  correctly rather than being swallowed.
+- Resized the worker pool from 2 → 1 live via `POST /scheduler/workers?count=1` and
+  confirmed via `GET /scheduler/status` that `poolSize` actually dropped once the excess
+  thread went idle and was reaped by the executor (not instantaneous - `ThreadPoolExecutor`
+  only reaps excess threads the next time they'd otherwise sit idle, and only spins up new
+  ones lazily when work arrives needing them - both confirmed by watching `poolSize` react
+  to real submitted work rather than changing the instant the resize call returned).
+- Did not manage to empirically prove priority reordering under contention: local 404
+  failures (an unanalyzed/nonexistent lecture) resolve in ~4ms, faster than sequential curl
+  calls could submit them, so a single worker was always idle again before the next job
+  arrived - never producing real queue depth to reorder. The comparator logic
+  (`priority.compareTo` then sequence) is straightforward enough to trust by inspection,
+  but this remains the one piece of Stage 12 verified by code review rather than by
+  observed behavior - a follow-up worth doing with an artificially slowed test job.
